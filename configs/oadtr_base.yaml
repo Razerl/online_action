@@ -1,0 +1,5 @@
+common:
+  dist:
+    port: '25929'
+model:
+  architecture: 'Oadtr'

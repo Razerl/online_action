@@ -1,32 +1,15 @@
 import argparse
-import datetime
 import random
 import time
-from pathlib import Path
-from config import get_args_parser
-import numpy as np
 import torch
-import torch.distributed as dist
-from torch.utils.data import DataLoader, DistributedSampler
-from util.lr_scheduler import get_scheduler
-from ipdb import set_trace
-import util as utl
-import os
-import utils
-import torch.backends.cudnn as cudnn
-import transformer_models
-from dataset import DataLayer
-from train import train, test
-from tensorboardX import SummaryWriter
-from test import test_one_epoch
-import torch.nn as nn
-import os.path as osp
+from lib.configs import cfg
+from lib.utils.common import *
+from lib.utils.logger import setup_logger
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train a online action recognizer')
     parser.add_argument('config', help='train config file path')
-    parser.add_argument('--work-dir', help='the dir to save logs and models')
     parser.add_argument(
         '--resume-from', help='the checkpoint file to resume from')
     parser.add_argument(
@@ -42,11 +25,7 @@ def parse_args():
         action='store_true',
         help=('whether to test the best checkpoint (if applicable) after '
               'training'))
-    parser.add_argument('--seed', type=int, default=None, help='random seed')
-    parser.add_argument(
-        '--deterministic',
-        action='store_true',
-        help='whether to set deterministic options for CUDNN backend.')
+    parser.add_argument('--seed', type=int, default=20, help='random seed')
     parser.add_argument(
         "opts",
         help="Modify config options using the command-line",
@@ -64,96 +43,43 @@ def parse_args():
 
 def main():
     args = parse_args()
-    cfg = Config.fromfile(args.config)
+    cfg.merge_from_file(args.config)
+    cfg.merge_from_list(args.opts)
+    # cfg.freeze()
 
     # set cudnn_benchmark
     torch.backends.cudnn.benchmark = True
 
-    # work_dir is determined in this priority:
-    # CLI > config file > default (base filename)
-    if args.work_dir is not None:
-        cfg.work_dir = args.work_dir
-    elif cfg.get('work_dir', None) is None:
+    if cfg.get('work_dir', None) is None:
         # use config filename as default work_dir if cfg.work_dir is None
-        cfg.work_dir = osp.join('./work_dirs',
-                                osp.splitext(osp.basename(args.config))[0])
+        cfg.work_dir = osp.join('./work_dirs', osp.splitext(osp.basename(args.config))[0])
+    # create work_dir
+    mkdir_or_exist(osp.abspath(cfg.work_dir))
+
     if args.resume_from is not None:
         cfg.resume_from = args.resume_from
-    if args.gpu_ids is not None:
-        cfg.gpu_ids = args.gpu_ids
-    else:
-        cfg.gpu_ids = range(1) if args.gpus is None else range(args.gpus)
 
     # init distributed env first, since logger depends on the dist info.
-    if args.launcher == 'none':
-        distributed = False
-    else:
-        distributed = True
-        init_dist(args.launcher, **cfg.dist_params)
-        _, world_size = get_dist_info()
-        cfg.gpu_ids = range(world_size)
+    init_dist(cfg.common.dist)
 
-    # The flag is used to determine whether it is omnisource training
-    cfg.setdefault('omnisource', False)
-
-    # The flag is used to register module's hooks
-    cfg.setdefault('module_hooks', [])
-
-    # create work_dir
-    mmcv.mkdir_or_exist(osp.abspath(cfg.work_dir))
     # dump config
     cfg.dump(osp.join(cfg.work_dir, osp.basename(args.config)))
     # init logger before other steps
     timestamp = time.strftime('%Y%m%d_%H%M%S', time.localtime())
     log_file = osp.join(cfg.work_dir, f'{timestamp}.log')
-    logger = get_root_logger(log_file=log_file, log_level=cfg.log_level)
-
-    # init the meta dict to record some important information such as
-    # environment info and seed, which will be logged
-    meta = dict()
-    # log env info
-    env_info_dict = collect_env()
-    env_info = '\n'.join([f'{k}: {v}' for k, v in env_info_dict.items()])
-    dash_line = '-' * 60 + '\n'
-    logger.info('Environment info:\n' + dash_line + env_info + '\n' +
-                dash_line)
-    meta['env_info'] = env_info
+    logger = setup_logger(output=log_file, distributed_rank=torch.distributed.get_rank(), name=f'OAD')
 
     # log some basic info
-    logger.info(f'Distributed training: {distributed}')
+    logger.info(f'Distributed training:')
     logger.info(f'Config: {cfg.pretty_text}')
 
-    # set random seeds
-    if args.seed is not None:
-        logger.info(f'Set random seed to {args.seed}, '
-                    f'deterministic: {args.deterministic}')
-        set_random_seed(args.seed, deterministic=args.deterministic)
-    cfg.seed = args.seed
-    meta['seed'] = args.seed
-    meta['config_name'] = osp.basename(args.config)
-    meta['work_dir'] = osp.basename(cfg.work_dir.rstrip('/\\'))
+    # fix the seed
+    set_random_seed(args.seed)
 
-
-
-
-    utils.init_distributed_mode(args)
-    args.store_name = '1101_en_{}_decoder_{}_dropout_{}_lr_drop_{}'\
-        .format(args.num_layers, args.decoder_layers, args.dropout_rate, args.lr_drop)
-
-    logger = utl.setup_logger(output=os.path.join(args.root_log, args.store_name, 'log.txt'),
-                              distributed_rank=torch.distributed.get_rank(),
-                              name=f'OadTr')
-    # save args
-    for arg in vars(args):
-        logger.info("{}:{}".format(arg, getattr(args, arg)))
-
-    device = torch.device(args.device)
-
-    # fix the seed for reproducibility
-    seed = args.seed + utils.get_rank()
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-    random.seed(seed)
+    model = build_model(
+        cfg.model,
+        train_cfg=cfg.get('train_cfg'),
+        test_cfg=cfg.get('test_cfg'))
 
     model = transformer_models.VisionTransformer_v3(args=args, img_dim=args.enc_layers,  # VisionTransformer_v3
                                                     patch_dim=args.patch_dim,
@@ -167,7 +93,6 @@ def main():
                                                     num_channels=args.dim_feature,
                                                     positional_encoding_type=args.positional_encoding_type
                                                     )
-    cudnn.benchmark = True
     model.to(device)
 
     loss_need = [
