@@ -1,5 +1,6 @@
+from .transformer_models.ViT import VisionTransformer_v3
 
-_ARCHITECTURES = {"OadTR": }
+_ARCHITECTURES = {"OadTR": VisionTransformer_v3}
 
 
 def build_model(cfg):

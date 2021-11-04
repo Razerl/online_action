@@ -1,10 +1,10 @@
 import argparse
-import random
 import time
 import torch
 from lib.configs import cfg
 from lib.utils.common import *
 from lib.utils.logger import setup_logger
+from lib.models.build import build_model
 
 
 def parse_args():
@@ -39,6 +39,23 @@ def parse_args():
         os.environ['LOCAL_RANK'] = str(args.local_rank)
 
     return args
+
+
+def train(cfg):
+    model = build_model(cfg.model).cuda()
+
+    optimizer = torch.optim.SGD(policies, args.lr,
+                                momentum=args.momentum,
+                                weight_decay=args.weight_decay)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr,
+                                 weight_decay=args.weight_decay,
+                                 )
+
+    optimizer = make_optimizer(cfg, model)
+    scheduler = make_lr_scheduler(cfg, optimizer)
+
+
 
 
 def main():
@@ -76,24 +93,12 @@ def main():
     # fix the seed
     set_random_seed(args.seed)
 
-    model = build_model(
-        cfg.model,
-        train_cfg=cfg.get('train_cfg'),
-        test_cfg=cfg.get('test_cfg'))
+    train(cfg)
 
-    model = transformer_models.VisionTransformer_v3(args=args, img_dim=args.enc_layers,  # VisionTransformer_v3
-                                                    patch_dim=args.patch_dim,
-                                                    out_dim=args.numclass,
-                                                    embedding_dim=args.embedding_dim,
-                                                    num_heads=args.num_heads,
-                                                    num_layers=args.num_layers,
-                                                    hidden_dim=args.hidden_dim,
-                                                    dropout_rate=args.dropout_rate,
-                                                    attn_dropout_rate=args.attn_dropout_rate,
-                                                    num_channels=args.dim_feature,
-                                                    positional_encoding_type=args.positional_encoding_type
-                                                    )
-    model.to(device)
+
+
+
+
 
     loss_need = [
         'labels_encoder',
@@ -130,9 +135,7 @@ def main():
                                  batch_size=args.batch_size, sampler=sampler_val,
                                  pin_memory=True, num_workers=args.num_workers, drop_last=True)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr,
-                                 weight_decay=args.weight_decay,
-                                 )
+
     lr_scheduler = get_scheduler(optimizer, len(data_loader_train), args)
 
     if args.frozen_weights is not None:
