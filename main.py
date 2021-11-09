@@ -5,6 +5,7 @@ from lib.configs import cfg
 from lib.utils.common import *
 from lib.utils.logger import setup_logger
 from lib.models.build import build_model
+from lib.solver.build import make_optimizer, make_lr_scheduler
 
 
 def parse_args():
@@ -41,21 +42,20 @@ def parse_args():
     return args
 
 
-def train(cfg):
-    model = build_model(cfg.model).cuda()
+def train(cfg, logger):
+    model = build_model(cfg.model)
+    n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logger.info('number of params: {}'.format(n_parameters))
 
-    optimizer = torch.optim.SGD(policies, args.lr,
-                                momentum=args.momentum,
-                                weight_decay=args.weight_decay)
+    data_loader = make_data_loader(
+        cfg,
+        is_train=True,
+        is_distributed=distributed,
+        start_iter=arguments["iteration"],
+    )
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr,
-                                 weight_decay=args.weight_decay,
-                                 )
-
-    optimizer = make_optimizer(cfg, model)
-    scheduler = make_lr_scheduler(cfg, optimizer)
-
-
+    optimizer = make_optimizer(cfg.solver, model)
+    scheduler = make_lr_scheduler(cfg.solver, len(data_loader), optimizer)
 
 
 def main():
@@ -93,125 +93,7 @@ def main():
     # fix the seed
     set_random_seed(args.seed)
 
-    train(cfg)
-
-
-
-
-
-
-    loss_need = [
-        'labels_encoder',
-        'labels_decoder',
-    ]
-    criterion = utl.SetCriterion(num_classes=args.numclass, losses=loss_need, args=args).to(device)
-
-    model_without_ddp = model
-    if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], broadcast_buffers=True,
-                                                          find_unused_parameters=True)
-        model_without_ddp = model.module
-    elif args.dataparallel:
-        args.gpu = '0,1,2,3'
-        model = nn.DataParallel(model, device_ids=[int(iii) for iii in args.gpu.split(',')])
-    n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    logger.info('number of params: {}'.format(n_parameters))
-    # logger.output_print(args)
-
-    dataset_train = DataLayer(phase='train', args=args)
-    dataset_val = DataLayer(phase='test', args=args)
-
-    if args.distributed:
-        sampler_train = torch.utils.data.distributed.DistributedSampler(dataset_train)
-        sampler_val = torch.utils.data.distributed.DistributedSampler(dataset_val)
-    else:
-        sampler_train = torch.utils.data.RandomSampler(dataset_train)
-        sampler_val = torch.utils.data.SequentialSampler(dataset_val)
-
-    data_loader_train = DataLoader(dataset_train,
-                                   batch_size=args.batch_size, sampler=sampler_train,
-                                   pin_memory=True, num_workers=args.num_workers, drop_last=True)
-    data_loader_val = DataLoader(dataset_val,
-                                 batch_size=args.batch_size, sampler=sampler_val,
-                                 pin_memory=True, num_workers=args.num_workers, drop_last=True)
-
-
-    lr_scheduler = get_scheduler(optimizer, len(data_loader_train), args)
-
-    if args.frozen_weights is not None:
-        checkpoint = torch.load(args.frozen_weights, map_location='cpu')
-        model_without_ddp.detr.load_state_dict(checkpoint['model'])
-
-    output_dir = Path(os.path.join(args.output_dir, args.store_name))
-    if utils.is_main_process() and not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-
-    if args.resume:
-        if args.resume.startswith('https'):
-            checkpoint = torch.hub.load_state_dict_from_url(
-                args.resume, map_location='cpu', check_hash=True)
-        else:
-            print('checkpoint: ', args.resume)
-            checkpoint = torch.load(args.resume, map_location='cpu')
-        model_without_ddp.load_state_dict(checkpoint['model'])
-        if not args.eval and 'optimizer' in checkpoint and 'lr_scheduler' in checkpoint and 'epoch' in checkpoint:
-            optimizer.load_state_dict(checkpoint['optimizer'])
-            lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
-            args.start_epoch = checkpoint['epoch'] + 1
-
-    with open(os.path.join(args.root_log, args.store_name, 'args.txt'), 'w') as f:
-        f.write(str(args))
-
-    tf_writer = SummaryWriter(log_dir=os.path.join(args.root_log, args.store_name))
-
-    if args.eval:
-        print('start testing for one epoch !!!')
-        with torch.no_grad():
-            test_stats = test_one_epoch(model, criterion, data_loader_val, device, logger, args)
-        return
-
-    for epoch in range(args.start_epoch, args.epochs):
-        data_loader_train.sampler.set_epoch(epoch)
-        train_stats = train(
-            model, criterion, data_loader_train, optimizer, device, epoch,
-            logger, lr_scheduler, args.clip_max_norm)
-
-        if dist.get_rank() == 0:
-            tf_writer.add_scalar('loss/train', train_stats['loss'], epoch)
-            tf_writer.add_scalar('loss_encoder/train', train_stats['label_encoder'], epoch)
-            tf_writer.add_scalar('loss_decoder/train', train_stats['label_decoder'], epoch)
-            tf_writer.add_scalar('acc/train_top1', train_stats['top1'], epoch)
-            tf_writer.add_scalar('acc/train_top5', train_stats['top5'], epoch)
-            tf_writer.add_scalar('lr', optimizer.param_groups[-1]['lr'], epoch)
-
-        if (epoch + 1) % args.eval_freq == 0:
-            data_loader_val.sampler.set_epoch(epoch)
-            test_stats = test(model, criterion, data_loader_val, device, logger, args)
-
-            if utils.is_main_process():
-                tf_writer.add_scalar('loss/test', test_stats['loss'], epoch)
-                tf_writer.add_scalar('loss_encoder/test', test_stats['label_encoder'], epoch)
-                tf_writer.add_scalar('loss_decoder/test', test_stats['label_decoder'], epoch)
-                tf_writer.add_scalar('acc/test_top1', test_stats['top1'], epoch)
-                tf_writer.add_scalar('acc/test_top5', test_stats['top5'], epoch)
-
-                prec1 = test_stats['top1']
-                is_best = prec1 > best_prec1
-                best_prec1 = max(prec1, best_prec1)
-                logger.info(("Best Prec@1: '{}'".format(best_prec1)))
-
-                if args.root_model:
-                    checkpoint_paths = [output_dir / f'checkpoint{epoch:04}.pth']
-                    if is_best:
-                        checkpoint_paths.append(output_dir / 'checkpoint.pth')
-                    for checkpoint_path in checkpoint_paths:
-                        utils.save_on_master({
-                            'model': model_without_ddp.state_dict(),
-                            'optimizer': optimizer.state_dict(),
-                            'lr_scheduler': lr_scheduler.state_dict(),
-                            'epoch': epoch,
-                            'args': args,
-                        }, checkpoint_path)
+    train(cfg, logger)
 
 
 if __name__ == '__main__':

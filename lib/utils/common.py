@@ -35,6 +35,7 @@ def get_ip(ip):
 
 def init_dist(dist_params):
     local_rank = int(os.environ['SLURM_LOCALID'])
+    dist_params.local_rank = local_rank
     rank = int(os.environ['SLURM_PROCID'])
     world_size = int(os.environ['SLURM_NTASKS'])
     ip = get_ip(os.environ['SLURM_STEP_NODELIST'])
