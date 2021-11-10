@@ -7,9 +7,8 @@ import torch.distributed as dist
 import numpy as np
 
 
-def mkdir_or_exist(path):
-    if not osp.exists(path):
-        os.mkdir(path)
+def is_main_process():
+    return get_rank() == 0
 
 
 def is_dist_avail_and_initialized():
@@ -52,5 +51,3 @@ def set_random_seed(seed):
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
-
-

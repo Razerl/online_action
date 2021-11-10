@@ -3,19 +3,11 @@ common:
     port: '25929'
 model:
   architecture: 'Oadtr'
-  enc_layers: 64
-  patch_dim: 1
-  embedding_dim: 1024
-  num_heads: 8
-  num_layers: 3
-  dropout_rate: 0.1
-  attn_dropout_rate: 0.1
-  hidden_dim: 1024
-  decoder_embedding_dim: 1024
-  decoder_attn_dropout_rate: 0.1
-  decoder_num_heads: 4
-  decoder_layers: 5
-  decoder_embedding_dim_out: 512
 slover:
   lr: 0.0001
   weight_decay: 0.0001
+  batch_size: 8
+dataset:
+  data_root: '/mnt/lustrenew/share/lirunze/data/'
+  position: 'all'
+  num_workers: 16

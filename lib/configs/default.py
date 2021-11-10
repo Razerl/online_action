@@ -21,7 +21,26 @@ _C.common.dist.local_rank = 0
 # -----------------------------------------------------------------------------
 _C.model = CN()
 _C.model.architecture = 'OadTR'
-_C.model.numclass = 17
+_C.model.num_class = 17
+_C.model.frozen_weights = None
+_C.model.resume = None
+_C.model.tune_from = None
+# -----------------------------OadTR-------------------------------------------
+_C.model.enc_layers = 64
+_C.model.patch_dim = 1
+_C.model.embedding_dim = 1024
+_C.model.num_heads = 8
+_C.model.num_layers = 3
+_C.model.dropout_rate = 0.1
+_C.model.attn_dropout_rate = 0.1
+_C.model.hidden_dim = 1024
+_C.model.query_num = 8
+_C.model.decoder_embedding_dim = 1024
+_C.model.decoder_attn_dropout_rate = 0.1
+_C.model.decoder_num_heads = 4
+_C.model.decoder_layers = 5
+_C.model.decoder_embedding_dim_out = 512
+
 
 # -----------------------------------------------------------------------------
 # SOLVER
@@ -40,11 +59,25 @@ _C.solver.lr_steps = [20, 45, 55]
 _C.solver.lr_drop = 1
 _C.solver.warmup_multiplier = 10
 
+_C.solver.batch_size = 128
+
+# -----------------------------------------------------------------------------
+# DATASET
+# -----------------------------------------------------------------------------
+_C.dataset = CN()
+_C.dataset.data_root = ''
+_C.dataset.position = 'all'
+_C.dataset.num_workers = 16
+
+# -----------------------------------------------------------------------------
+# TRAINING
+# -----------------------------------------------------------------------------
+_C.training = CN()
+_C.training.start_epoch = 0
+_C.training.evaluate = False
 
 
 # ---------------------------------------------------------------------------- #
 # Misc options
 # ---------------------------------------------------------------------------- #
-_C.OUTPUT_DIR = "output/mask-rcnn-r-50-c4-1x/"
-
-_C.PATHS_CATALOG = os.path.join(os.path.dirname(__file__), "paths_catalog.py")
+_C.output_dir = None

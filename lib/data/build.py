@@ -1,12 +1,16 @@
-def build_dataset(args, phase='train'):
+import torch
+from .dataset import HaierDataset
 
 
+def build_dataset(cfg, phase):
+    return HaierDataset(cfg, phase)
 
-def make_data_loader(cfg, is_train=True, is_distributed=False, start_iter=0):
-    dataset = build_dataset(args, phase)
-    train_sampler = torch.utils.data.distributed.DistributedSampler(dataset)
+
+def make_data_loader(cfg, phase='train'):
+    dataset = build_dataset(cfg, phase)
+    sampler = torch.utils.data.distributed.DistributedSampler(dataset)
 
     data_loaders = torch.utils.data.DataLoader(dataset=dataset,
-                                               batch_size=args.batch_size, num_workers=args.num_workers,
-                                               pin_memory=True, sampler=train_sampler, drop_last=True)
+                                               batch_size=cfg.solver.batch_size, num_workers=cfg.dataset.num_workers,
+                                               pin_memory=True, sampler=sampler, drop_last=True)
     return data_loaders

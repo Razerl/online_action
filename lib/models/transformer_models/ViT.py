@@ -18,7 +18,7 @@ class VisionTransformer_v3(nn.Module):
                  ):
         super(VisionTransformer_v3, self).__init__()
         img_dim = args.enc_layers
-        out_dim = args.numclass
+        out_dim = args.num_class
         num_channels = args.dim_feature
         assert args.embedding_dim % args.num_heads == 0
         assert img_dim % args.patch_dim == 0
