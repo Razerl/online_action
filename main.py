@@ -10,6 +10,7 @@ from lib.utils.logger import setup_logger
 from lib.models.build import build_model
 from lib.solver.build import make_optimizer, make_lr_scheduler
 from lib.data.build import make_data_loader
+from lib.engine.inference import evaluate
 
 
 def parse_args():
@@ -44,56 +45,6 @@ def parse_args():
         os.environ['LOCAL_RANK'] = str(args.local_rank)
 
     return args
-
-
-def train(cfg, logger, tf_writer):
-    model = build_model(cfg.model)
-    n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    logger.info('number of params: {}'.format(n_parameters))
-
-    data_loader = make_data_loader(cfg, phase='train')
-
-    optimizer = make_optimizer(cfg.solver, model)
-    scheduler = make_lr_scheduler(cfg.solver, len(data_loader), optimizer)
-
-    if cfg.model.frozen_weights is not None:
-        checkpoint = torch.load(cfg.model.frozen_weights, map_location='cpu')
-        model.load_state_dict(checkpoint['state_dict'])
-
-    if cfg.model.resume:
-        if os.path.isfile(cfg.model.resume):
-            logger.info(("=> loading checkpoint '{}'".format(cfg.model.resume)))
-            checkpoint = torch.load(cfg.model.resume, map_location='cpu')
-            cfg.training.start_epoch = checkpoint['epoch']
-            best_prec1 = checkpoint['best_prec1']
-            model.load_state_dict(checkpoint['state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer'])
-            scheduler.load_state_dict(checkpoint['scheduler'])
-            logger.info(("=> loaded checkpoint '{}' (epoch {})".format(
-                cfg.training.evaluate, checkpoint['epoch'])))
-        else:
-            logger.info(("=> no checkpoint found at '{}'".format(cfg.model.resume)))
-
-    if cfg.model.tune_from:
-        logger.info(("=> fine-tuning from '{}'".format(cfg.model.tune_from)))
-        sd = torch.load(cfg.model.tune_from)
-        sd = sd['state_dict']
-        model_dict = model.state_dict()
-        keys1, keys2 = set(list(sd.keys())), set(list(model_dict.keys()))
-        set_diff = (keys1 - keys2) | (keys2 - keys1)
-        logger.info('#### Notice: keys that failed to load: {}'.format(set_diff))
-        model_dict.update(sd)
-        model.load_state_dict(model_dict, strict=True)
-
-    if cfg.training.evaluate:
-        print('start testing for one epoch !!!')
-        with torch.no_grad():
-            test_stats = evaluate(model, criterion, data_loader_val, device, logger, args)
-        return test_stats
-
-
-def evaluate():
-    return
 
 
 def main():
@@ -136,7 +87,95 @@ def main():
     # fix the seed
     set_random_seed(args.seed)
 
-    train(cfg, logger, tf_writer)
+    # ----------------------------------prepare---------------------------------------------
+    model = build_model(cfg.model)
+    n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logger.info('number of params: {}'.format(n_parameters))
+
+    data_loader_train = make_data_loader(cfg, phase='train')
+    data_loader_val = make_data_loader(cfg, phase='test')
+
+    optimizer = make_optimizer(cfg.solver, model)
+    scheduler = make_lr_scheduler(cfg.solver, len(data_loader_train), optimizer)
+
+    if cfg.model.frozen_weights is not None:
+        checkpoint = torch.load(cfg.model.frozen_weights, map_location='cpu')
+        model.load_state_dict(checkpoint['state_dict'])
+
+    if cfg.model.resume:
+        if os.path.isfile(cfg.model.resume):
+            logger.info(("=> loading checkpoint '{}'".format(cfg.model.resume)))
+            checkpoint = torch.load(cfg.model.resume, map_location='cpu')
+            cfg.training.start_epoch = checkpoint['epoch']
+            best_prec1 = checkpoint['best_prec1']
+            model.load_state_dict(checkpoint['state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer'])
+            scheduler.load_state_dict(checkpoint['scheduler'])
+            logger.info(("=> loaded checkpoint '{}' (epoch {})".format(
+                cfg.training.evaluate, checkpoint['epoch'])))
+        else:
+            logger.info(("=> no checkpoint found at '{}'".format(cfg.model.resume)))
+
+    if cfg.model.tune_from:
+        logger.info(("=> fine-tuning from '{}'".format(cfg.model.tune_from)))
+        sd = torch.load(cfg.model.tune_from)
+        sd = sd['state_dict']
+        model_dict = model.state_dict()
+        keys1, keys2 = set(list(sd.keys())), set(list(model_dict.keys()))
+        set_diff = (keys1 - keys2) | (keys2 - keys1)
+        logger.info('#### Notice: keys that failed to load: {}'.format(set_diff))
+        model_dict.update(sd)
+        model.load_state_dict(model_dict, strict=True)
+
+    if cfg.training.evaluate:
+        logger.info('start testing for one epoch !!!')
+        with torch.no_grad():
+            test_stats = inference(model)
+        return test_stats
+
+    # --------------------------------------training-----------------------------------------
+
+    for epoch in range(cfg.training.start_epoch, cfg.training.epochs):
+        data_loader_train.sampler.set_epoch(epoch)
+        train_stats = train(cfg, model, criterion, data_loader_train, optimizer, device, epoch,
+                            logger, lr_scheduler, args.clip_max_norm)
+
+        if dist.get_rank() == 0:
+            tf_writer.add_scalar('loss/train', train_stats['loss'], epoch)
+            tf_writer.add_scalar('loss_encoder/train', train_stats['label_encoder'], epoch)
+            tf_writer.add_scalar('loss_decoder/train', train_stats['label_decoder'], epoch)
+            tf_writer.add_scalar('acc/train_top1', train_stats['top1'], epoch)
+            tf_writer.add_scalar('acc/train_top5', train_stats['top5'], epoch)
+            tf_writer.add_scalar('lr', optimizer.param_groups[-1]['lr'], epoch)
+
+        if (epoch + 1) % args.eval_freq == 0:
+            data_loader_val.sampler.set_epoch(epoch)
+            test_stats = test(model, criterion, data_loader_val, device, logger, args)
+
+            if utils.is_main_process():
+                tf_writer.add_scalar('loss/test', test_stats['loss'], epoch)
+                tf_writer.add_scalar('loss_encoder/test', test_stats['label_encoder'], epoch)
+                tf_writer.add_scalar('loss_decoder/test', test_stats['label_decoder'], epoch)
+                tf_writer.add_scalar('acc/test_top1', test_stats['top1'], epoch)
+                tf_writer.add_scalar('acc/test_top5', test_stats['top5'], epoch)
+
+                prec1 = test_stats['top1']
+                is_best = prec1 > best_prec1
+                best_prec1 = max(prec1, best_prec1)
+                logger.info(("Best Prec@1: '{}'".format(best_prec1)))
+
+                if args.root_model:
+                    checkpoint_paths = [output_dir / f'checkpoint{epoch:04}.pth']
+                    if is_best:
+                        checkpoint_paths.append(output_dir / 'checkpoint.pth')
+                    for checkpoint_path in checkpoint_paths:
+                        utils.save_on_master({
+                            'model': model_without_ddp.state_dict(),
+                            'optimizer': optimizer.state_dict(),
+                            'lr_scheduler': lr_scheduler.state_dict(),
+                            'epoch': epoch,
+                            'args': args,
+                        }, checkpoint_path)
 
 
 if __name__ == '__main__':

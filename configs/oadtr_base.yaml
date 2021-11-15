@@ -11,3 +11,5 @@ dataset:
   data_root: '/mnt/lustrenew/share/lirunze/data/'
   position: 'all'
   num_workers: 16
+training:
+  epochs: 60

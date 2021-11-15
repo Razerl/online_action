@@ -75,7 +75,8 @@ _C.dataset.num_workers = 16
 _C.training = CN()
 _C.training.start_epoch = 0
 _C.training.evaluate = False
-
+_C.training.epochs = 20
+_C.training.training_print_freq = 40
 
 # ---------------------------------------------------------------------------- #
 # Misc options
