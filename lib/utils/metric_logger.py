@@ -11,20 +11,17 @@ class SmoothedValue(object):
 
     def __init__(self, window_size=20):
         self.deque = deque(maxlen=window_size)
-        self.series = []
         self.total = 0.0
         self.count = 0
 
     def update(self, value):
         self.deque.append(value)
-        self.series.append(value)
         self.count += 1
         self.total += value
 
     @property
-    def median(self):
-        d = torch.tensor(list(self.deque))
-        return d.median().item()
+    def val(self):
+        return self.deque[-1]
 
     @property
     def avg(self):
@@ -54,9 +51,14 @@ class MetricLogger(object):
         return object.__getattr__(self, attr)
 
     def __str__(self):
-        loss_str = []
+        _str = []
         for name, meter in self.meters.items():
-            loss_str.append(
-                "{}: {:.4f} ({:.4f})".format(name, meter.median, meter.global_avg)
+            _str.append(
+                "{}: {:.4f} ({:.4f})".format(name, meter.val, meter.global_avg)
             )
-        return self.delimiter.join(loss_str)
+        return self.delimiter.join(_str)
+
+    def tf_write(self, writer, epoch, phase):
+        for name, meter in self.meters.items():
+            if name not in ['time', 'data']:
+                writer.add_scalar('{}/{}'.format(name, phase), meter.avg, epoch)

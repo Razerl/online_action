@@ -41,7 +41,6 @@ _C.model.decoder_num_heads = 4
 _C.model.decoder_layers = 5
 _C.model.decoder_embedding_dim_out = 512
 
-
 # -----------------------------------------------------------------------------
 # SOLVER
 # -----------------------------------------------------------------------------
@@ -77,6 +76,19 @@ _C.training.start_epoch = 0
 _C.training.evaluate = False
 _C.training.epochs = 20
 _C.training.training_print_freq = 40
+_C.training.max_norm = 1.0
+
+# -----------------------------------------------------------------------------
+# LOSS
+# -----------------------------------------------------------------------------
+_C.loss = CN()
+_C.loss.enc_loss_coef = 1
+_C.loss.dec_loss_coef = 0.3
+_C.loss.similar_loss_coef = 0.1
+_C.loss.enc_loss_coef = 1
+_C.loss.sample_cls_index = -1
+_C.loss.sample_weight = 3.0
+_C.loss.contrastive_loss_margin = 1.0
 
 # ---------------------------------------------------------------------------- #
 # Misc options

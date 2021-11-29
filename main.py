@@ -11,6 +11,8 @@ from lib.models.build import build_model
 from lib.solver.build import make_optimizer, make_lr_scheduler
 from lib.data.build import make_data_loader
 from lib.engine.inference import evaluate
+from lib.engine.trainer import train
+from lib.utils.loss import SetCriterion
 
 
 def parse_args():
@@ -98,6 +100,12 @@ def main():
     optimizer = make_optimizer(cfg.solver, model)
     scheduler = make_lr_scheduler(cfg.solver, len(data_loader_train), optimizer)
 
+    loss_need = [
+        'labels_encoder',
+        'labels_decoder',
+    ]
+    criterion = SetCriterion(cfg, losses=loss_need)
+
     if cfg.model.frozen_weights is not None:
         checkpoint = torch.load(cfg.model.frozen_weights, map_location='cpu')
         model.load_state_dict(checkpoint['state_dict'])
@@ -137,16 +145,11 @@ def main():
 
     for epoch in range(cfg.training.start_epoch, cfg.training.epochs):
         data_loader_train.sampler.set_epoch(epoch)
-        train_stats = train(cfg, model, criterion, data_loader_train, optimizer, device, epoch,
-                            logger, lr_scheduler, args.clip_max_norm)
+        train_meters = train(cfg, model, criterion, data_loader_train, optimizer, epoch,
+                             logger, scheduler)
 
         if dist.get_rank() == 0:
-            tf_writer.add_scalar('loss/train', train_stats['loss'], epoch)
-            tf_writer.add_scalar('loss_encoder/train', train_stats['label_encoder'], epoch)
-            tf_writer.add_scalar('loss_decoder/train', train_stats['label_decoder'], epoch)
-            tf_writer.add_scalar('acc/train_top1', train_stats['top1'], epoch)
-            tf_writer.add_scalar('acc/train_top5', train_stats['top5'], epoch)
-            tf_writer.add_scalar('lr', optimizer.param_groups[-1]['lr'], epoch)
+            train_meters.tf_write(tf_writer, epoch, phase='train')
 
         if (epoch + 1) % args.eval_freq == 0:
             data_loader_val.sampler.set_epoch(epoch)
