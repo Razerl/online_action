@@ -37,30 +37,16 @@ class HaierDataset(data.Dataset):
 
     def deal_dataset(self):
         prex = self.pos + '_' + self.phase
-        anno_file = open(osp.join(self.data_root, 'annotations', 'anno0529_' + prex + '_online_0918.txt'), 'rb')
-        labels_file = pickle.load(open(osp.join(self.data_root, 'result', prex + '.pkl'), 'rb'))
-        features_file = pickle.load(open(osp.join(self.data_root, 'result', prex + '_embedding.pkl'), 'rb'))
-        ipdb.set_trace()
-        annos = anno_file.readlines()
+        pkl_file = pickle.load(open(osp.join(self.data_root, prex + '.pkl'), 'rb'))
         target_all = dict()
         features_all = dict()
-        for i in range(len(annos)):
-            session = annos[i].strip().split()[0]
-            _, _, label_video, label_chunk = labels_file[i]
-            bg, fg = np.ones_like(label_chunk) * (self.numclass - 1), np.ones_like(label_chunk) * label_video
-            label_chunk = np.where(label_chunk == 0, bg, fg).astype(np.int)
-            if session not in target_all.keys():
-                target_all[session] = [np.eye(self.numclass)[label_chunk]]
-                features_all[session] = [features_file[i]]
-            else:
-                target_all[session] += [np.eye(self.numclass)[label_chunk]]
-                features_all[session] += [features_file[i]]
-        for session in target_all.keys():
-            anno = np.array(target_all[session]).reshape((-1, self.numclass))
-            feature_length = anno.shape[0]
-            target_all[session] = {'anno': anno, 'feature_length': feature_length}
-            features_all[session] = np.array(features_all[session]).reshape((-1, 2048))
-            assert feature_length == features_all[session].shape[0], 'Error: target and features are not aligned !!!'
+        for session in pkl_file.keys():
+            label_chunk = pkl_file[session]['label']
+            target_all[session] = {'anno': np.eye(self.numclass)[label_chunk],
+                                   'label': label_chunk,
+                                   'feature_length': label_chunk.size
+                                   }
+            features_all[session] = pkl_file[session]['embedding']
         return target_all, features_all
 
     def get_dec_target(self, target_vector):

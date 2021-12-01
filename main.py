@@ -1,8 +1,6 @@
 import argparse
 import time
 import torch.backends.cudnn as cudnn
-import torch.distributed as dist
-import os.path as osp
 from pathlib import Path
 from tensorboardX import SummaryWriter
 from lib.configs import cfg
@@ -21,20 +19,9 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Train a online action recognizer')
     parser.add_argument('config', help='train config file path')
     parser.add_argument(
-        '--resume-from', help='the checkpoint file to resume from')
-    parser.add_argument(
-        '--validate',
-        action='store_true',
-        help='whether to evaluate the checkpoint during training')
-    parser.add_argument(
-        '--test-last',
+        '--test_last',
         action='store_true',
         help='whether to test the checkpoint after training')
-    parser.add_argument(
-        '--test-best',
-        action='store_true',
-        help=('whether to test the best checkpoint (if applicable) after '
-              'training'))
     parser.add_argument('--seed', type=int, default=20, help='random seed')
     parser.add_argument(
         "opts",
@@ -153,20 +140,21 @@ def main():
         if is_main_process():
             train_meters.tf_write(tf_writer, epoch, phase='train')
 
-        if (epoch + 1) % cfg.training.eval_freq == 0:
-            data_loader_val.sampler.set_epoch(epoch)
-            test_meters = validate(cfg, model, criterion, evaluation, data_loader_val, logger)
+        if cfg.test_last:
+            if (epoch + 1) % cfg.training.eval_freq == 0:
+                data_loader_val.sampler.set_epoch(epoch)
+                test_meters = validate(cfg, model, criterion, evaluation, data_loader_val, logger)
 
-            if is_main_process():
-                test_meters.tf_write(tf_writer, epoch, phase='test')
+                if is_main_process():
+                    test_meters.tf_write(tf_writer, epoch, phase='test')
 
-                prec1 = test_meters['top1']
-                is_best = prec1 > best_prec1
-                best_prec1 = max(prec1, best_prec1)
-                logger.info(("Best Prec@1: '{}'".format(best_prec1)))
-                tf_writer.flush()
+                    prec1 = test_meters['top1']
+                    is_best = prec1 > best_prec1
+                    best_prec1 = max(prec1, best_prec1)
+                    logger.info(("Best Prec@1: '{}'".format(best_prec1)))
+                    tf_writer.flush()
 
-                state = {
+                    state = {
                         'model': model.state_dict(),
                         'optimizer': optimizer.state_dict(),
                         'scheduler': scheduler.state_dict(),
@@ -175,7 +163,8 @@ def main():
                         'epoch': epoch,
                         'args': cfg,
                     }
-                save_checkpoint(model_dir, state, epoch, is_best)
+                    save_checkpoint(model_dir, state, epoch, is_best)
+
 
 
 if __name__ == '__main__':
