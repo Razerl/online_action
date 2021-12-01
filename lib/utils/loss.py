@@ -23,6 +23,8 @@ class SetCriterion(nn.Module):
         self.ignore_index = cfg.loss.sample_cls_index
         self.weight = cfg.loss.sample_weight
         self.margin = cfg.loss.contrastive_loss_margin
+        self.model = cfg.model.architecture
+        self.num_class = cfg.model.num_class
         self.size_average = True
         self.log_softmax = nn.LogSoftmax(dim=1)
 
@@ -78,7 +80,19 @@ class SetCriterion(nn.Module):
                       The expected keys in each dict depends on the losses applied, see each loss' doc
         """
         losses = {}
+        if self.model == 'OadTR':
+            enc_score_p0, dec_scores = outputs
+            class_h_target, dec_target = targets
+            outputs = {
+                'labels_encoder': enc_score_p0,
+                'labels_decoder': dec_scores.view(-1, self.num_class),
+            }
+            targets = {
+                'labels_encoder': class_h_target.view(-1, self.num_class),
+                'labels_decoder': dec_target.view(-1, self.num_class),
+            }
+        else:
+            raise NotImplementedError(f"model {self.model} not supported")
         for loss in self.losses:
             losses.update(self.get_loss(loss, outputs[loss], targets[loss]))
-
         return losses

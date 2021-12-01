@@ -14,7 +14,6 @@ _C = CN()
 _C.common = CN()
 _C.common.dist = CN()
 _C.common.dist.port = '25929'
-_C.common.dist.local_rank = 0
 
 # -----------------------------------------------------------------------------
 # MODEL
@@ -77,6 +76,7 @@ _C.training.evaluate = False
 _C.training.epochs = 20
 _C.training.training_print_freq = 40
 _C.training.max_norm = 1.0
+_C.training.eval_freq = 1
 
 # -----------------------------------------------------------------------------
 # LOSS

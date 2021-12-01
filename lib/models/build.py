@@ -10,8 +10,8 @@ def build_model(cfg):
 
     model = torch.nn.parallel.DistributedDataParallel(
         model.cuda(),
-        device_ids=[cfg.local_rank],
-        broadcast_buffers=True,
+        device_ids=[torch.cuda.current_device()],
+        broadcast_buffers=False,
         find_unused_parameters=True
     )
 

@@ -89,7 +89,7 @@ class HaierDataset(data.Dataset):
         distance_target = torch.tensor(distance_target)
         class_h_target = torch.tensor(class_h_target)
         dec_target = torch.tensor(dec_target)
-        return _inputs, enc_target, distance_target, class_h_target, dec_target
+        return _inputs, (class_h_target, dec_target)
 
     def __len__(self):
         return len(self.inputs)

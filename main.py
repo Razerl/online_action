@@ -2,6 +2,7 @@ import argparse
 import time
 import torch.backends.cudnn as cudnn
 import torch.distributed as dist
+import os.path as osp
 from pathlib import Path
 from tensorboardX import SummaryWriter
 from lib.configs import cfg
@@ -10,9 +11,10 @@ from lib.utils.logger import setup_logger
 from lib.models.build import build_model
 from lib.solver.build import make_optimizer, make_lr_scheduler
 from lib.data.build import make_data_loader
-from lib.engine.inference import evaluate
+from lib.engine.inference import validate
 from lib.engine.trainer import train
 from lib.utils.loss import SetCriterion
+from lib.utils.eval_utils import SetEvaluation
 
 
 def parse_args():
@@ -63,24 +65,23 @@ def main():
         cfg.output_dir = osp.join('./outputs', osp.splitext(osp.basename(args.config))[0])
     # create output_dir
     output_dir = Path(osp.abspath(cfg.output_dir))
-    if is_main_process() and not osp.exists(output_dir):
-        os.makedirs(output_dir)
+    log_dir, model_dir = check_folders(output_dir)
 
     if args.resume_from is not None:
         cfg.model.resume_from = args.resume_from
 
     # init distributed env first, since logger depends on the dist info.
-    init_dist(cfg.common.dist)
+    init_dist_slurm(port=cfg.common.dist.port)
 
     # dump config
     cfg.dump(osp.join(cfg.output_dir, osp.basename(args.config)))
     # init logger before other steps
     timestamp = time.strftime('%Y%m%d_%H%M%S', time.localtime())
-    log_file = osp.join(cfg.output_dir, 'log', f'{timestamp}.log')
+    log_file = osp.join(log_dir, f'{timestamp}.log')
     logger = setup_logger(output=log_file, distributed_rank=dist.get_rank(), name=f'OAD')
 
     # create Tensorboard
-    tf_writer = SummaryWriter(log_dir=osp.join(cfg.output_dir, 'log'))
+    tf_writer = SummaryWriter(log_dir=log_dir)
 
     # log some basic info
     logger.info(f'Distributed training:')
@@ -105,6 +106,7 @@ def main():
         'labels_decoder',
     ]
     criterion = SetCriterion(cfg, losses=loss_need)
+    evaluation = SetEvaluation(cfg)
 
     if cfg.model.frozen_weights is not None:
         checkpoint = torch.load(cfg.model.frozen_weights, map_location='cpu')
@@ -138,47 +140,42 @@ def main():
     if cfg.training.evaluate:
         logger.info('start testing for one epoch !!!')
         with torch.no_grad():
-            test_stats = inference(model)
+            test_stats = validate(cfg, model, criterion, evaluation, data_loader_val, logger)
         return test_stats
 
     # --------------------------------------training-----------------------------------------
-
+    best_prec1 = 0
     for epoch in range(cfg.training.start_epoch, cfg.training.epochs):
         data_loader_train.sampler.set_epoch(epoch)
-        train_meters = train(cfg, model, criterion, data_loader_train, optimizer, epoch,
+        train_meters = train(cfg, model, criterion, evaluation, data_loader_train, optimizer, epoch,
                              logger, scheduler)
 
-        if dist.get_rank() == 0:
+        if is_main_process():
             train_meters.tf_write(tf_writer, epoch, phase='train')
 
-        if (epoch + 1) % args.eval_freq == 0:
+        if (epoch + 1) % cfg.training.eval_freq == 0:
             data_loader_val.sampler.set_epoch(epoch)
-            test_stats = test(model, criterion, data_loader_val, device, logger, args)
+            test_meters = validate(cfg, model, criterion, evaluation, data_loader_val, logger)
 
-            if utils.is_main_process():
-                tf_writer.add_scalar('loss/test', test_stats['loss'], epoch)
-                tf_writer.add_scalar('loss_encoder/test', test_stats['label_encoder'], epoch)
-                tf_writer.add_scalar('loss_decoder/test', test_stats['label_decoder'], epoch)
-                tf_writer.add_scalar('acc/test_top1', test_stats['top1'], epoch)
-                tf_writer.add_scalar('acc/test_top5', test_stats['top5'], epoch)
+            if is_main_process():
+                test_meters.tf_write(tf_writer, epoch, phase='test')
 
-                prec1 = test_stats['top1']
+                prec1 = test_meters['top1']
                 is_best = prec1 > best_prec1
                 best_prec1 = max(prec1, best_prec1)
                 logger.info(("Best Prec@1: '{}'".format(best_prec1)))
+                tf_writer.flush()
 
-                if args.root_model:
-                    checkpoint_paths = [output_dir / f'checkpoint{epoch:04}.pth']
-                    if is_best:
-                        checkpoint_paths.append(output_dir / 'checkpoint.pth')
-                    for checkpoint_path in checkpoint_paths:
-                        utils.save_on_master({
-                            'model': model_without_ddp.state_dict(),
-                            'optimizer': optimizer.state_dict(),
-                            'lr_scheduler': lr_scheduler.state_dict(),
-                            'epoch': epoch,
-                            'args': args,
-                        }, checkpoint_path)
+                state = {
+                        'model': model.state_dict(),
+                        'optimizer': optimizer.state_dict(),
+                        'scheduler': scheduler.state_dict(),
+                        'prec1': prec1,
+                        'best_prec1': best_prec1,
+                        'epoch': epoch,
+                        'args': cfg,
+                    }
+                save_checkpoint(model_dir, state, epoch, is_best)
 
 
 if __name__ == '__main__':

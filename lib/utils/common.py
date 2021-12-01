@@ -1,10 +1,21 @@
 import os
-import re
+import os.path as osp
 import random
 import torch
-import os.path as osp
+import subprocess
 import torch.distributed as dist
 import numpy as np
+
+
+def check_folders(work_path):
+    log_path = osp.join(work_path, 'logs')
+    model_path = osp.join(work_path, 'checkpoints')
+    folders = [work_path, log_path, model_path]
+    if is_main_process():
+        for f in folders:
+            if not osp.exists(f):
+                os.makedirs(f)
+    return log_path, model_path
 
 
 def is_main_process():
@@ -25,25 +36,39 @@ def get_rank():
     return dist.get_rank()
 
 
-def get_ip(ip):
-    ip = re.sub('SH-IDC1-', '', ip)
-    ip = ip.strip().split('-')
-    ip = ip[0] + '.' + ip[1] + '.' + ip[2] + '.' + ip[3]
-    return ip
+def init_dist_slurm(backend='nccl', port=None):
+    """Initialize slurm distributed training environment.
 
+    If argument ``port`` is not specified, then the master port will be system
+    environment variable ``MASTER_PORT``. If ``MASTER_PORT`` is not in system
+    environment variable, then a default port ``29500`` will be used.
 
-def init_dist(dist_params):
-    local_rank = int(os.environ['SLURM_LOCALID'])
-    dist_params.local_rank = local_rank
-    rank = int(os.environ['SLURM_PROCID'])
-    world_size = int(os.environ['SLURM_NTASKS'])
-    ip = get_ip(os.environ['SLURM_STEP_NODELIST'])
-
-    host_addr_full = 'tcp://' + ip + ':' + dist_params.port
-    torch.distributed.init_process_group("nccl", init_method=host_addr_full,
-                                         rank=rank, world_size=world_size)
-    torch.cuda.set_device(local_rank)
-    assert torch.distributed.is_initialized()
+    Args:
+        backend (str): Backend of torch.distributed.
+        port (int, optional): Master port. Defaults to None.
+    """
+    proc_id = int(os.environ['SLURM_PROCID'])
+    ntasks = int(os.environ['SLURM_NTASKS'])
+    node_list = os.environ['SLURM_NODELIST']
+    num_gpus = torch.cuda.device_count()
+    torch.cuda.set_device(proc_id % num_gpus)
+    addr = subprocess.getoutput(
+        f'scontrol show hostname {node_list} | head -n1')
+    # specify master port
+    if port is not None:
+        os.environ['MASTER_PORT'] = str(port)
+    elif 'MASTER_PORT' in os.environ:
+        pass  # use MASTER_PORT in the environment variable
+    else:
+        # 29500 is torch.distributed default port
+        os.environ['MASTER_PORT'] = '29500'
+    # use MASTER_ADDR in the environment variable if it already exists
+    if 'MASTER_ADDR' not in os.environ:
+        os.environ['MASTER_ADDR'] = addr
+    os.environ['WORLD_SIZE'] = str(ntasks)
+    os.environ['LOCAL_RANK'] = str(proc_id % num_gpus)
+    os.environ['RANK'] = str(proc_id)
+    dist.init_process_group(backend=backend)
 
 
 def set_random_seed(seed):
@@ -51,3 +76,11 @@ def set_random_seed(seed):
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
+
+
+def save_checkpoint(save_path, state, save_epoch, is_best):
+    checkpoint_path = osp.join(save_path, f'checkpoint{save_epoch:04}.pth.tar')
+    torch.save(state, checkpoint_path)
+    if is_best:
+        best_checkpoint_path = osp.join(save_path, 'best.pth.tar')
+        torch.save(state, best_checkpoint_path)
